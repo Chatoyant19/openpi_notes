@@ -3,6 +3,12 @@
         "editor.defaultFormatter": "charliermarsh.ruff",
         "editor.formatOnSave": true,
     },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/packages/openpi-client/src"
+    ],
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.indexing": true,
     "python.testing.pytestArgs": [
         "src"
     ],

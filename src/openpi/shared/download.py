@@ -105,19 +105,58 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
     return local_path
 
 
+def _find_gsutil() -> str | None:
+    """Locate a genuine Google Cloud SDK gsutil.
+
+    `gsutil` is an ambiguous name: Debian ships an unrelated `gsutil` package (a GrandStream VoIP
+    phone config tool) that installs /usr/bin/gsutil and shadows the Cloud SDK one on PATH. That
+    impostor exits 0 when handed `-m cp -r`, so `check=True` does not catch it and we would silently
+    produce an empty checkpoint directory. Probe each candidate with `version` and keep the first
+    one that identifies itself as gsutil.
+    """
+    candidates = []
+    for entry in os.get_exec_path():
+        candidate = pathlib.Path(entry) / "gsutil"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            candidates.append(str(candidate))
+
+    for candidate in candidates:
+        try:
+            result = subprocess.run(  # noqa: S603
+                [candidate, "version"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0 and "gsutil version" in result.stdout.lower():
+            return candidate
+        logger.debug(f"Ignoring {candidate}: does not look like Google Cloud SDK gsutil")
+
+    return None
+
+
 def _download_gsutil(url: str, local_path: pathlib.Path, **kwargs) -> None:
     """Download a file or directory from GCS using gsutil if available, otherwise fall back to gcsfs."""
-    if shutil.which("gsutil") is None:
+    gsutil = _find_gsutil()
+    if gsutil is None:
         logger.warning(
             "gsutil not found, falling back to gcsfs. This may fail if GCP credentials are not configured correctly."
         )
         _download_fsspec(url, local_path, **kwargs)
         return
     local_path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["gsutil", "-m", "cp", "-r", f"{url}/*", str(local_path)],
+    subprocess.run(  # noqa: S603
+        [gsutil, "-m", "cp", "-r", f"{url}/*", str(local_path)],
         check=True,
     )
+    # The impostor gsutil described in _find_gsutil exits 0 without copying anything; more generally
+    # a partial failure here would leave a cache entry that looks valid forever. Fail loudly instead.
+    if not any(local_path.iterdir()):
+        msg = f"gsutil ({gsutil}) reported success but copied nothing from {url}"
+        raise RuntimeError(msg)
 
 
 def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
